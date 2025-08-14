@@ -1,0 +1,11 @@
+celery==5.3.4
+redis==5.0.1
+pandas==2.1.3
+openpyxl==3.1.2
+requests==2.31.0
+pyodbc==5.0.1
+SQLAlchemy==2.0.23
+python-dotenv==1.0.0
+flower==2.0.1
+pytest==7.4.3
+pymssql==2.2.10  # Alternative to pyodbc for some scenarios
