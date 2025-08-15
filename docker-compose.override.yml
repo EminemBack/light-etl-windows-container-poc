@@ -1,8 +1,0 @@
-version: '3.8'
-
-services:
-  etl-worker:
-    volumes:
-      - ./etl-worker:/app
-    environment:
-      - DEBUG=true

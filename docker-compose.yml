@@ -22,8 +22,9 @@ services:
     build:
       context: ./etl-worker
       dockerfile: Dockerfile
+    hostname: etl-worker
     depends_on:
-      - fileserver
+      # - fileserver
       - redis
     environment:
       - PYTHONUNBUFFERED=1
@@ -69,7 +70,7 @@ services:
 
 networks:
   etl-network:
-    driver: nat
+    driver: bridge  # Changed from 'nat' to 'bridge' for Linux
 
 volumes:
   redis-data:

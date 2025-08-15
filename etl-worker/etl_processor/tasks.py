@@ -5,10 +5,17 @@ from etl_processor.celery_app import app
 from etl_processor.file_access import WindowsFileAccess
 import pandas as pd
 from datetime import datetime
-from sqlalchemy import create_engine
 import os
 
 logger = logging.getLogger(__name__)
+
+# Make SQLAlchemy optional for testing
+try:
+    from sqlalchemy import create_engine
+    SQLALCHEMY_AVAILABLE = True
+except ImportError:
+    logger.warning("SQLAlchemy not installed - database features disabled")
+    SQLALCHEMY_AVAILABLE = False
 
 class CallbackTask(Task):
     """Task with callbacks for success/failure"""

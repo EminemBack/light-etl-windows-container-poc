@@ -1,0 +1,5 @@
+FROM python:3.11-slim
+WORKDIR /app
+RUN pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org celery redis requests
+COPY . .
+CMD ["python", "-c", "print('Container works!')"]
