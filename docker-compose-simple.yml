@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  # Linux ETL worker
+  etl-worker:
+    build:
+      context: ./etl-worker
+      dockerfile: Dockerfile
+    hostname: etl-worker
+    depends_on:
+      - redis
+    environment:
+      - PYTHONUNBUFFERED=1
+      # Use host.docker.internal on Windows/Mac or actual IP on Linux
+      - FILESERVER_URL=${FILESERVER_URL:-http://host.docker.internal:5000}
+      - DATABASE_URL=${DATABASE_URL}
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL:-redis://redis:6379/0}
+      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
+    networks:
+      - etl-network
+    volumes:
+      - ./etl-worker:/app
+      - etl-logs:/app/logs
+    restart: unless-stopped
+    command: ["celery", "-A", "etl_processor.celery_app", "worker", "--loglevel=info", "--concurrency=2"]
+    extra_hosts:
+      # This allows container to access host machine
+      - "host.docker.internal:host-gateway"
+
+  # Redis for Celery
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    networks:
+      - etl-network
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+  # Flower for Celery monitoring
+  flower:
+    build:
+      context: ./etl-worker
+      dockerfile: Dockerfile
+    command: ["celery", "-A", "etl_processor.celery_app", "flower", "--port=5555"]
+    ports:
+      - "5555:5555"
+    depends_on:
+      - redis
+    environment:
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL:-redis://redis:6379/0}
+      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
+    networks:
+      - etl-network
+    restart: unless-stopped
+
+networks:
+  etl-network:
+    driver: bridge
+
+volumes:
+  redis-data:
+  etl-logs:

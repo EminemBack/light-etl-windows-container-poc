@@ -111,3 +111,9 @@ def test_connection():
     except Exception as e:
         logger.error(f"Connection test failed: {str(e)}")
         raise
+
+@app.task(name='simple_test')
+def simple_test():
+    """Simple test task that doesn't require any external dependencies"""
+    logger.info("Simple test task executed")
+    return {"status": "success", "message": "Hello from Celery!"}
