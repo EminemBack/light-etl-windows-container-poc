@@ -6,43 +6,38 @@ services:
     build:
       context: ./fileserver
       dockerfile: Dockerfile
-    platform: windows
+    platform: windows/amd64
     volumes:
-      - Z:\
+      # Mount Z: drive to container (adjust source path as needed)
+      - type: bind
+        source: "Z:\\"
+        target: "C:\\shared_data"
+        read_only: false
+      # Optional: mount logs directory
+      - type: bind
+        source: "./logs"
+        target: "C:\\app\\logs"
+        read_only: false
     ports:
       - "5000:5000"
-    networks:
-      - etl-network
+    # networks:
+    #   - etl-network
     environment:
-      - SHARED_PATH=C:\shared_data
-    restart: unless-stopped
-
-  # Linux ETL worker
-  etl-worker:
-    build:
-      context: ./etl-worker
-      dockerfile: Dockerfile
-    hostname: etl-worker
-    depends_on:
-      # - fileserver
-      - redis
-    environment:
+      - SHARED_PATH=C:\\shared_data
       - PYTHONUNBUFFERED=1
-      - FILESERVER_URL=${FILESERVER_URL:-http://fileserver:5000}
-      - DATABASE_URL=${DATABASE_URL}
-      - CELERY_BROKER_URL=${CELERY_BROKER_URL:-redis://redis:6379/0}
-      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
-    networks:
-      - etl-network
-    volumes:
-      - ./etl-worker:/app
-      - etl-logs:/app/logs
+      - FLASK_ENV=production
     restart: unless-stopped
-    command: ["celery", "-A", "etl_processor.celery_app", "worker", "--loglevel=info", "--concurrency=2"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
 
-  # Redis for Celery
+  # Redis for Celery (Linux)
   redis:
     image: redis:7-alpine
+    platform: linux/amd64
     ports:
       - "6379:6379"
     networks:
@@ -50,28 +45,63 @@ services:
     volumes:
       - redis-data:/data
     restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
 
-  # Optional: Flower for Celery monitoring
+  # ETL Worker (Linux)
+  etl-worker:
+    build:
+      context: ./etl-worker
+      dockerfile: Dockerfile
+    platform: linux/amd64
+    depends_on:
+      # fileserver:
+      #   condition: service_healthy
+      redis:
+        condition: service_started
+    environment:
+      - PYTHONUNBUFFERED=1
+      - FILESERVER_URL=http://fileserver:5000
+      - DATABASE_URL=${DATABASE_URL}
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+    networks:
+      - etl-network
+    volumes:
+      - ./etl-worker:/app
+      - etl-logs:/app/logs
+    restart: unless-stopped
+    command: ["celery", "-A", "etl_processor.celery_app", "worker", "--loglevel=info", "--concurrency=2"]
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 1G
+
+  # Flower monitoring (Linux)
   flower:
     build:
       context: ./etl-worker
       dockerfile: Dockerfile
-    command: ["celery", "-A", "etl_processor.celery_app", "flower", "--port=5555"]
+    platform: linux/amd64
+    command: ["celery", "-A", "etl_processor.celery_app", "flower", "--port=5555", "--broker=redis://redis:6379/0"]
     ports:
       - "5555:5555"
     depends_on:
       - redis
     environment:
-      - CELERY_BROKER_URL=${CELERY_BROKER_URL:-redis://redis:6379/0}
-      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
     networks:
       - etl-network
     restart: unless-stopped
 
 networks:
   etl-network:
-    driver: bridge  # Changed from 'nat' to 'bridge' for Linux
+    driver: bridge
 
 volumes:
   redis-data:
+    driver: local
   etl-logs:
+    driver: local
