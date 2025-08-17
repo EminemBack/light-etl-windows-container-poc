@@ -1,40 +1,66 @@
 version: '3.8'
 
 services:
-  # Windows file server container
-  fileserver:
-    build:
-      context: ./fileserver
-      dockerfile: Dockerfile
-    platform: windows/amd64
-    volumes:
-      # Mount Z: drive to container (adjust source path as needed)
-      - type: bind
-        source: "Z:\\"
-        target: "C:\\shared_data"
-        read_only: false
-      # Optional: mount logs directory
-      - type: bind
-        source: "./logs"
-        target: "C:\\app\\logs"
-        read_only: false
-    ports:
-      - "5000:5000"
-    # networks:
-    #   - etl-network
+  # PostgreSQL Database with persistent storage
+  postgres:
+    image: postgres:15-alpine
+    platform: linux/amd64
     environment:
-      - SHARED_PATH=C:\\shared_data
-      - PYTHONUNBUFFERED=1
-      - FLASK_ENV=production
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"  # Exposed to host for external connections
+    volumes:
+      # Named volume for data persistence
+      - postgres_data:/var/lib/postgresql/data
+      # Bind mount for backups (optional)
+      - type: bind
+        source: "./postgres/backups"
+        target: "/backups"
+      # Initialization scripts
+      - ./postgres/init:/docker-entrypoint-initdb.d
+    networks:
+      - etl-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health', timeout=5)"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
+      test: ["CMD-SHELL", "pg_isready -U etl_user -d etl_database"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Resource limits for production
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 1G
 
-  # Redis for Celery (Linux)
+  # # Windows file server container
+  # fileserver:
+  #   build:
+  #     context: ./fileserver
+  #     dockerfile: Dockerfile
+  #   platform: windows/amd64
+  #   volumes:
+  #     - type: bind
+  #       source: "Z:\\"
+  #       target: "C:\\shared_data"
+  #       read_only: false
+  #     - type: bind
+  #       source: "./logs"
+  #       target: "C:\\app\\logs"
+  #       read_only: false
+  #   ports:
+  #     - "5000:5000"
+  #   environment:
+  #     - SHARED_PATH=C:\\shared_data
+  #     - PYTHONUNBUFFERED=1
+  #     - FLASK_ENV=production
+  #   restart: unless-stopped
+
+  # Redis for Celery
   redis:
     image: redis:7-alpine
     platform: linux/amd64
@@ -43,48 +69,64 @@ services:
     networks:
       - etl-network
     volumes:
-      - redis-data:/data
+      - redis_data:/data
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
 
-  # ETL Worker (Linux)
+  # ETL Worker
   etl-worker:
     build:
       context: ./etl-worker
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.postgres
     platform: linux/amd64
     depends_on:
-      # fileserver:
-      #   condition: service_healthy
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_started
     environment:
       - PYTHONUNBUFFERED=1
       - FILESERVER_URL=http://fileserver:5000
-      - DATABASE_URL=${DATABASE_URL}
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      # PostgreSQL connection settings
+      - DB_TYPE=${DB_TYPE}
+      - DB_HOST=${DB_HOST}
+      - DB_PORT=${DB_PORT}
+      - DB_NAME=${DB_NAME}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DATABASE_URL=${DATABASE_URL}
     networks:
       - etl-network
     volumes:
       - ./etl-worker:/app
-      - etl-logs:/app/logs
+      - etl_logs:/app/logs
+      - type: bind
+        source: "./certs"
+        target: "/usr/local/share/ca-certificates/corporate"
+        read_only: true
     restart: unless-stopped
-    command: ["celery", "-A", "etl_processor.celery_app", "worker", "--loglevel=info", "--concurrency=2"]
-    deploy:
-      resources:
-        limits:
-          memory: 2G
-        reservations:
-          memory: 1G
+    command: bash -c "
+      echo 'Installing corporate certificates...' &&
+      if [ -d /usr/local/share/ca-certificates/corporate ] && [ -n \"\$(ls -A /usr/local/share/ca-certificates/corporate 2>/dev/null)\" ]; then
+        cp /usr/local/share/ca-certificates/corporate/*.crt /usr/local/share/ca-certificates/ &&
+        update-ca-certificates &&
+        echo 'Corporate certificates installed';
+      fi &&
+      echo 'Testing database connection...' &&
+      python3 -c 'from etl_processor.database_postgres import test_connection; print(test_connection())' &&
+      echo 'Starting Celery worker...' &&
+      celery -A etl_processor.celery_app worker --loglevel=info --concurrency=2
+      "
 
-  # Flower monitoring (Linux)
+  # Flower monitoring
   flower:
     build:
       context: ./etl-worker
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.postgres
     platform: linux/amd64
-    command: ["celery", "-A", "etl_processor.celery_app", "flower", "--port=5555", "--broker=redis://redis:6379/0"]
+    command: ["celery", "-A", "etl_processor.celery_app", "flower", "--port=5555"]
     ports:
       - "5555:5555"
     depends_on:
@@ -94,6 +136,24 @@ services:
       - CELERY_RESULT_BACKEND=redis://redis:6379/1
     networks:
       - etl-network
+    volumes:
+      - ./etl-worker:/app
+    restart: unless-stopped
+
+  # pgAdmin for database management
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    platform: linux/amd64
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    ports:
+      - "5050:80"  # Accessible from host
+    networks:
+      - etl-network
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
     restart: unless-stopped
 
 networks:
@@ -101,7 +161,16 @@ networks:
     driver: bridge
 
 volumes:
-  redis-data:
+  # Named volumes for data persistence
+  postgres_data:
     driver: local
-  etl-logs:
+    driver_opts:
+      type: none
+      o: bind
+      device: ./postgres/data  # Data stored in local directory
+  redis_data:
+    driver: local
+  etl_logs:
+    driver: local
+  pgadmin_data:
     driver: local

@@ -38,3 +38,9 @@ shared_data/*.csv
 # OS
 .DS_Store
 Thumbs.db
+
+#certificates
+*/certs/*.crt
+
+# postgres data
+postgres/data/pgdata/*

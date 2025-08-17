@@ -1,0 +1,1 @@
+Place your corporate certificates (.crt files) in this directory
