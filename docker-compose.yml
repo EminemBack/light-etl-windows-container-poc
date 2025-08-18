@@ -1,6 +1,8 @@
-version: '3.8'
+# version: '3.8'
 
 services:
+  # File server runs as Windows Service (not containerized)
+
   # PostgreSQL Database with persistent storage
   postgres:
     image: postgres:15-alpine
@@ -37,29 +39,6 @@ services:
         reservations:
           memory: 1G
 
-  # # Windows file server container
-  # fileserver:
-  #   build:
-  #     context: ./fileserver
-  #     dockerfile: Dockerfile
-  #   platform: windows/amd64
-  #   volumes:
-  #     - type: bind
-  #       source: "Z:\\"
-  #       target: "C:\\shared_data"
-  #       read_only: false
-  #     - type: bind
-  #       source: "./logs"
-  #       target: "C:\\app\\logs"
-  #       read_only: false
-  #   ports:
-  #     - "5000:5000"
-  #   environment:
-  #     - SHARED_PATH=C:\\shared_data
-  #     - PYTHONUNBUFFERED=1
-  #     - FLASK_ENV=production
-  #   restart: unless-stopped
-
   # Redis for Celery
   redis:
     image: redis:7-alpine
@@ -79,6 +58,7 @@ services:
       context: ./etl-worker
       dockerfile: Dockerfile.postgres
     platform: linux/amd64
+    hostname: etl-worker
     depends_on:
       postgres:
         condition: service_healthy
@@ -119,6 +99,10 @@ services:
       echo 'Starting Celery worker...' &&
       celery -A etl_processor.celery_app worker --loglevel=info --concurrency=2
       "
+    # extra_hosts:
+    #   # This allows container to access host machine
+    #   - "host.docker.internal:host-gateway"
+
 
   # Flower monitoring
   flower:
@@ -154,6 +138,23 @@ services:
       - etl-network
     volumes:
       - pgadmin_data:/var/lib/pgadmin
+    restart: unless-stopped
+
+  # Optional: Health check service
+  healthcheck:
+    image: curlimages/curl:latest
+    depends_on:
+      - etl-worker
+    networks:
+      - etl-network
+    command: |
+      sh -c "
+      while true; do
+        echo 'Health check at $(date)'
+        curl -f http://host.docker.internal:5000/health || echo 'File server down'
+        curl -f http://flower:5555 || echo 'Flower down'
+        sleep 60
+      done"
     restart: unless-stopped
 
 networks:

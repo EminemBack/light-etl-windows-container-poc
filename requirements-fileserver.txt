@@ -1,0 +1,21 @@
+# Enhanced requirements for file watcher service
+flask==3.0.0
+# pandas==2.1.3
+openpyxl==3.1.2
+waitress==2.1.2
+python-dotenv==1.0.0
+
+# File system watching
+watchdog #==3.0.0
+
+# Celery client for triggering ETL tasks
+celery==5.3.4
+redis==5.0.1
+
+# Windows service support
+pywin32 #==306; sys_platform == "win32"
+
+# Optional: For better HTTP requests
+requests==2.31.0
+
+# pip install flask pandas openpyxl waitress python-dotenv redis pywin32 requests

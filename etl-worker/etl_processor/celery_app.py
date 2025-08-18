@@ -9,7 +9,7 @@ app = Celery(
     'etl_processor',
     broker=os.getenv('CELERY_BROKER_URL', 'redis://redis:6379/0'),
     backend=os.getenv('CELERY_RESULT_BACKEND', 'redis://redis:6379/1'),
-    include=['etl_processor.simple_tasks'] # Use simple tasks for testing
+    include=['etl_processor.enhanced_tasks'] # Use simple tasks for testing
 )
 
 # Celery configuration
