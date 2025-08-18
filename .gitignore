@@ -44,3 +44,8 @@ Thumbs.db
 
 # postgres data
 postgres/data/pgdata/*
+
+# Excel and csv
+*.xlsx
+*.xls
+*.csv

@@ -110,7 +110,7 @@ services:
       context: ./etl-worker
       dockerfile: Dockerfile.postgres
     platform: linux/amd64
-    command: ["celery", "-A", "etl_processor.celery_app", "flower", "--port=5555"]
+    command: ["celery", "-A", "etl_processor.celery_app", "flower", "--port=5555", "--broker=redis://redis:6379/0"]
     ports:
       - "5555:5555"
     depends_on:
@@ -118,6 +118,8 @@ services:
     environment:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - FLOWER_UNAUTHENTICATED_API=true
+      - FLOWER_BASIC_AUTH=admin:password123
     networks:
       - etl-network
     volumes:
