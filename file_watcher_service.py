@@ -107,36 +107,108 @@ class FileProcessor:
         
         for filepath in files_to_process:
             try:
-                self.trigger_etl_task(filepath)
+                self.trigger_etl_task_minimal_test(filepath)
                 self.processed_files.add(filepath)
             except Exception as e:
                 logger.error(f"Failed to trigger ETL for {filepath}: {e}")
     
     def trigger_etl_task(self, filepath: str):
-        """Trigger ETL processing for a file"""
+        """Trigger ETL processing using proper Celery task calling"""
+        
+        if not ETL_TRIGGER_ENABLED:
+            logger.info(f"ETL triggering disabled, skipping {os.path.basename(filepath)}")
+            return
+        sys.path.insert(0, './etl-worker')
+        filename = os.path.basename(filepath)
+        logger.info(f'filepath: {filepath}')
+        logger.info(f"Triggering ETL task for: {filename}")
+        
+        try:
+            # Import and call the task properly
+            from etl_processor.enhanced_tasks import process_excel_file
+            
+            # Send task to Celery
+            result = process_excel_file.delay(
+                filename, 
+                auto_triggered=True, 
+                filepath=filepath
+            )
+            
+            logger.info(f"ETL task queued successfully for {filename}, Task ID: {result.task_id}")
+            self.log_processing_event(filepath, 'triggered', f"Task ID: {result.task_id}")
+            
+        except Exception as e:
+            logger.error(f"Failed to trigger ETL task for {filename}: {e}")
+            self.log_processing_event(filepath, 'error', str(e))
+
+    # FIXED VERSION - Use direct Redis queue insertion instead:
+
+    def trigger_etl_task_fixed(self, filepath: str):
+        """Fixed version - uses direct Redis queue insertion"""
         if not ETL_TRIGGER_ENABLED:
             logger.info(f"ETL triggering disabled, skipping {os.path.basename(filepath)}")
             return
         
         filename = os.path.basename(filepath)
-        logger.info(f"Triggering ETL task for: {filename}")
+        logger.info(f"Triggering ETL task for: {filename} trigger_etl_task_fixed")
         
         try:
-            # Use Redis directly to send task
+            # Use direct Redis connection (not Celery)
             import redis
-            r = redis.Redis.from_url(CELERY_BROKER_URL_WATCHER)
+            import json
+            import time
             
+            # Connect to Redis directly using localhost
+            r = redis.Redis(host='localhost', port=6379, db=0)
+            
+            # Create task message manually
             task_data = {
                 'id': f"{filename}_{int(time.time())}",
-                'task': 'etl_processor.tasks.process_excel_file',
+                'task': 'etl_processor.enhanced_tasks.process_excel_file',
                 'args': [filename],
                 'kwargs': {'auto_triggered': True, 'filepath': filepath},
                 'retries': 0,
-                'eta': None
+                'eta': None,
+                # Add required Celery fields
+                'headers': {},
+                'properties': {
+                    'correlation_id': f"{filename}_{int(time.time())}",
+                    'reply_to': None,
+                    'delivery_mode': 2,
+                    'delivery_info': {'exchange': '', 'routing_key': 'celery'},
+                    'priority': 0,
+                    'body_encoding': 'base64',
+                    'delivery_tag': None
+                }
             }
             
-            # Send to Celery queue
-            r.lpush('celery', json.dumps(task_data))
+            # Create Celery message format
+            celery_message = {
+                'body': json.dumps([task_data['args'], task_data['kwargs'], {}]).encode('utf-8'),
+                'headers': {
+                    'lang': 'py',
+                    'task': task_data['task'],
+                    'id': task_data['id'],
+                    'shadow': None,
+                    'eta': None,
+                    'expires': None,
+                    'group': None,
+                    'group_index': None,
+                    'retries': 0,
+                    'timelimit': [None, None],
+                    'root_id': task_data['id'],
+                    'parent_id': None,
+                    'argsrepr': repr(task_data['args']),
+                    'kwargsrepr': repr(task_data['kwargs'])
+                },
+                'content-type': 'application/json',
+                'content-encoding': 'utf-8'
+            }
+
+            logger.info('pushing cerlery on redis')
+            # Push to Redis queue
+            r.lpush('celery', json.dumps(celery_message))
+            logger.info('after pushing cerlery on redis')
             
             logger.info(f"ETL task queued successfully for {filename}")
             self.log_processing_event(filepath, 'triggered', f"Task ID: {task_data['id']}")
@@ -144,7 +216,95 @@ class FileProcessor:
         except Exception as e:
             logger.error(f"Failed to trigger ETL task for {filename}: {e}")
             self.log_processing_event(filepath, 'error', str(e))
-    
+
+    def trigger_etl_task_simple(self, filepath: str):
+        # filename = os.path.basename(filepath)
+        # logger.info(f"Triggering ETL via HTTP for: {filename}")
+        
+        # try:
+        #     import requests
+        #     response = requests.post(f"http://localhost:5000/trigger_etl/{filename}", timeout=30)
+        #     if response.status_code == 200:
+        #         logger.info(f'status: {response.status_code}')
+        #         logger.info(f"ETL triggered successfully via HTTP")
+        #     else:
+        #         logger.error(f"HTTP trigger failed: {response.status_code}")
+        # except Exception as e:
+        #     logger.error(f"HTTP trigger failed: {e}")
+        pass
+
+    def trigger_etl_task_emergency(self, filepath: str):
+        """Emergency Redis approach - very simple"""
+        if not ETL_TRIGGER_ENABLED:
+            return
+        
+        filename = os.path.basename(filepath)
+        logger.info(f"Emergency ETL trigger for: {filename}")
+        
+        try:
+            import redis
+            import json
+            import time
+            
+            r = redis.Redis(host='localhost', port=6379, db=0)
+            
+            # Ultra-simple message
+            simple_task = {
+                'task': 'etl_processor.enhanced_tasks.process_excel_file',
+                'args': [filename],
+                'kwargs': {'auto_triggered': True},
+                'id': f"emergency_{int(time.time())}"
+            }
+            
+            # Just push as simple JSON
+            r.lpush('celery', json.dumps(simple_task))
+            logger.info(f"Emergency task queued: {filename}")
+            
+        except Exception as e:
+            logger.error(f"Emergency trigger failed: {e}")
+
+    def trigger_etl_task_minimal_test(self, filepath: str):
+        filename = os.path.basename(filepath)
+        logger.info(f"Minimal test for: {filename}")
+        
+        try:
+            import redis
+            r = redis.Redis(host='localhost', port=6379, db=0)
+            
+            # Test if worker can handle ANY message
+            r.lpush('celery', '{"test": "message"}')
+            logger.info("Pushed test message")
+            
+        except Exception as e:
+            logger.error(f"Test failed: {e}")
+
+    def trigger_etl_task_working_method(self, filepath: str):
+        """Use Celery's send_task - should work properly"""
+        filename = os.path.basename(filepath)
+        logger.info(f"Using Celery send_task for: {filename}")
+        
+        try:
+            from celery import Celery
+            
+            # Create Celery app configured for Windows host
+            app = Celery('file_watcher')
+            app.conf.update(
+                broker_url='http://localhost:6379/0',
+                result_backend='http://localhost:6379/1'
+            )
+            
+            # Use send_task (doesn't require importing the actual task)
+            result = app.send_task(
+                'etl_processor.enhanced_tasks.process_excel_file',
+                args=[filename],
+                kwargs={'auto_triggered': True, 'filepath': str(filepath)}
+            )
+            
+            logger.info(f"Task sent successfully: {result.id}")
+            
+        except Exception as e:
+            logger.error(f"send_task failed: {e}")
+
     def log_processing_event(self, filepath: str, status: str, details: str):
         """Log processing events for tracking"""
         event = {
@@ -346,29 +506,30 @@ def list_files():
 
 @app.route('/trigger_etl/<filename>', methods=['POST'])
 def manual_trigger_etl(filename):
-    """Manually trigger ETL for a specific file"""
-    try:
-        current_path = get_available_paths()
-        filepath = os.path.join(current_path, filename)
+    # """Manually trigger ETL for a specific file"""
+    # try:
+    #     current_path = get_available_paths()
+    #     filepath = os.path.join(current_path, filename)
         
-        if not os.path.exists(filepath):
-            return jsonify({"error": f"File {filename} not found"}), 404
+    #     if not os.path.exists(filepath):
+    #         return jsonify({"error": f"File {filename} not found"}), 404
         
-        if not is_allowed_file(filename):
-            return jsonify({"error": f"File type not supported"}), 400
+    #     if not is_allowed_file(filename):
+    #         return jsonify({"error": f"File type not supported"}), 400
         
-        # Trigger immediately
-        file_processor.trigger_etl_task(filepath)
+    #     # Trigger immediately
+    #     file_processor.trigger_etl_task_emergency(filepath)
         
-        return jsonify({
-            "message": f"ETL triggered for {filename}",
-            "filepath": filepath,
-            "timestamp": datetime.now().isoformat()
-        })
+    #     return jsonify({
+    #         "message": f"ETL triggered for {filename}",
+    #         "filepath": filepath,
+    #         "timestamp": datetime.now().isoformat()
+    #     })
         
-    except Exception as e:
-        logger.error(f"Error triggering ETL for {filename}: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+    # except Exception as e:
+    #     logger.error(f"Error triggering ETL for {filename}: {str(e)}")
+    #     return jsonify({"error": str(e)}), 500
+    pass
 
 @app.route('/processing_complete', methods=['POST'])
 def processing_complete():

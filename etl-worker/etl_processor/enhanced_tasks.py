@@ -47,7 +47,8 @@ class CallbackTask(Task):
         except Exception as e:
             logger.warning(f"Failed to notify file server: {e}")
 
-@app.task(base=CallbackTask, name='etl_processor.tasks.process_excel_file')
+# FIX: Correct task name to match what file watcher expects
+@app.task(base=CallbackTask, name='etl_processor.enhanced_tasks.process_excel_file')
 def process_excel_file(filename, sheet_name=0, auto_triggered=False, filepath=None):
     """
     Enhanced Excel processing with auto-trigger support
@@ -216,7 +217,8 @@ def archive_processed_file(filename, file_access):
     except Exception as e:
         logger.warning(f"Failed to archive {filename}: {e}")
 
-@app.task(name='etl_processor.tasks.batch_process_files')
+# FIX: Correct task name to match what file watcher expects
+@app.task(name='etl_processor.enhanced_tasks.batch_process_files')
 def batch_process_files(file_patterns=None):
     """
     Process multiple files in batch
@@ -258,7 +260,8 @@ def batch_process_files(file_patterns=None):
         logger.error(f"Batch processing failed: {e}")
         raise
 
-@app.task(name='etl_processor.tasks.health_check')
+# FIX: Correct task name to match what file watcher expects
+@app.task(name='etl_processor.enhanced_tasks.health_check')
 def health_check():
     """Health check task for monitoring"""
     try:
