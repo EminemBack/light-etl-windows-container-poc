@@ -1,0 +1,421 @@
+#!/usr/bin/env python3
+"""
+Pattern-Based File Watcher
+Maps directory patterns to specific table names
+"""
+
+import os
+import sys
+import time
+import logging
+import pandas as pd
+import glob
+from datetime import datetime
+from pathlib import Path
+
+# Force localhost settings
+os.environ['CELERY_BROKER_URL'] = 'redis://localhost:6379/0'
+os.environ['CELERY_RESULT_BACKEND'] = 'redis://localhost:6379/1'
+
+# Clear any conflicting Celery settings
+for key in list(os.environ.keys()):
+    if 'CELERY' in key or 'REDIS' in key:
+        if key not in ['CELERY_BROKER_URL', 'CELERY_RESULT_BACKEND']:
+            del os.environ[key]
+
+# Configuration
+WATCH_PATH = os.environ.get('WATCH_PATH', r'Z:\\')
+BACKUP_WATCH_PATH = os.environ.get('BACKUP_WATCH_PATH', r'.\watch_test')
+POLL_INTERVAL = int(os.environ.get('POLL_INTERVAL', 10))
+PROCESS_DELAY = int(os.environ.get('PROCESS_DELAY', 5))
+SUPPORTED_EXTENSIONS = {'.csv', '.xlsx', '.xls', '.xlsm'}
+
+# PATTERN MAPPING: directory pattern -> table name
+PATTERN_TABLE_MAPPING = {
+    'tel_list': 'dim_numbers',
+    'customer_data': 'dim_customers',
+    'product_info': 'dim_products',
+    'sales_data': 'fact_sales',
+    # Add more patterns as needed
+    # 'pattern_in_path': 'target_table_name'
+}
+
+# Logging setup - reduced verbosity
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('./pattern_watcher.log'),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
+
+class PatternBasedWatcher:
+    """File watcher that maps file paths to specific tables based on patterns"""
+    
+    def __init__(self):
+        self.processed_files = set()
+        self.file_timestamps = {}
+        self.celery_app = self.create_working_celery()
+        self.initial_scan_done = False
+        
+        logger.info("Pattern-Based File Watcher initialized")
+        logger.info(f"Pattern mappings: {PATTERN_TABLE_MAPPING}")
+        logger.info(f"Will check every {POLL_INTERVAL} seconds")
+        
+        # Do initial scan to record existing files (but don't process them)
+        self._initial_file_scan()
+        
+    def _initial_file_scan(self):
+        """Record all existing files without processing them"""
+        watch_path = self.get_watch_path()
+        existing_count = 0
+        
+        logger.info("Recording existing files (will not process them)...")
+        
+        try:
+            patterns = [os.path.join(watch_path, "**", f"*{ext}") for ext in SUPPORTED_EXTENSIONS]
+            
+            for pattern in patterns:
+                for filepath in glob.glob(pattern, recursive=True):
+                    if os.path.isfile(filepath) and self.is_supported_file(filepath):
+                        # Record the file's current timestamp
+                        stat_info = os.stat(filepath)
+                        self.file_timestamps[filepath] = stat_info.st_mtime
+                        existing_count += 1
+                        
+        except Exception as e:
+            logger.error(f"Error during initial scan: {e}")
+        
+        self.initial_scan_done = True
+        logger.info(f"Initial scan complete: {existing_count} existing files recorded (ignored)")
+        logger.info("Watcher is now ready - will only process NEW files")
+        
+    def create_working_celery(self):
+        """Create Celery with proven working configuration"""
+        try:
+            from celery import Celery
+            
+            app = Celery('pattern_watcher')
+            app.conf.update({
+                'broker_url': 'redis://localhost:6379/0',
+                'result_backend': None,
+                'task_ignore_result': True,
+                'task_store_eager_result': False,
+                'result_expires': None,
+                'task_acks_late': False,
+                'worker_prefetch_multiplier': 1,
+                'task_serializer': 'json',
+                'accept_content': ['json'],
+                'result_serializer': 'json',
+                'broker_connection_retry_on_startup': True,
+                'broker_connection_retry': True,
+                'broker_connection_max_retries': 3
+            })
+            
+            logger.info("Celery configured successfully")
+            return app
+            
+        except Exception as e:
+            logger.error(f"Failed to create Celery: {e}")
+            return None
+    
+    def get_watch_path(self):
+        """Get the path to watch for files"""
+        if os.path.exists(WATCH_PATH):
+            return WATCH_PATH
+        
+        os.makedirs(BACKUP_WATCH_PATH, exist_ok=True)
+        logger.info(f"Using backup watch path: {BACKUP_WATCH_PATH}")
+        return BACKUP_WATCH_PATH
+    
+    def get_table_name_from_path(self, filepath):
+        """
+        Determine table name based on file path patterns
+        
+        Args:
+            filepath (str): Full path to the file
+            
+        Returns:
+            str or None: Table name if pattern matches, None if no match
+        """
+        # Convert to forward slashes for consistent matching
+        normalized_path = filepath.replace('\\', '/').lower()
+        
+        # Check each pattern in the mapping
+        for pattern, table_name in PATTERN_TABLE_MAPPING.items():
+            if pattern.lower() in normalized_path:
+                logger.info(f"Pattern '{pattern}' found in path -> table '{table_name}'")
+                return table_name
+        
+        # No pattern matched
+        logger.debug(f"No pattern matched for: {filepath}")
+        return None
+    
+    def is_supported_file(self, filename):
+        """Check if file is supported"""
+        return Path(filename).suffix.lower() in SUPPORTED_EXTENSIONS
+    
+    def read_file_to_dataframe(self, filepath):
+        """Read file and convert to DataFrame"""
+        filename = os.path.basename(filepath)
+        file_ext = Path(filepath).suffix.lower()
+        
+        try:
+            if file_ext == '.csv':
+                # Try different encodings for CSV
+                for encoding in ['utf-8', 'utf-8-sig', 'latin1', 'cp1252']:
+                    try:
+                        df = pd.read_csv(filepath, encoding=encoding)
+                        break
+                    except UnicodeDecodeError:
+                        continue
+                else:
+                    df = pd.read_csv(filepath, encoding='utf-8', errors='ignore')
+                    
+            elif file_ext in ['.xlsx', '.xls', '.xlsm']:
+                df = pd.read_excel(filepath, sheet_name=0)
+            else:
+                raise ValueError(f"Unsupported file type: {file_ext}")
+            
+            if df.empty:
+                logger.warning(f"File is empty: {filename}")
+                return None
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"Error reading file {filename}: {e}")
+            raise
+    
+    def process_file(self, filepath, table_name):
+        """Process a single file to the specified table"""
+        if not self.celery_app:
+            logger.warning(f"Celery not configured, skipping {filepath}")
+            return False
+        
+        filename = os.path.basename(filepath)
+        
+        try:
+            # Read file to DataFrame
+            df = self.read_file_to_dataframe(filepath)
+            if df is None:
+                return False
+            
+            # Convert DataFrame to records
+            data_records = df.to_dict('records')
+            
+            # Create source name with timestamp
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            source_name = f"{Path(filename).stem}_{timestamp}"
+            
+            logger.info(f"Processing: {filename} -> {table_name} ({len(data_records)} records)")
+            
+            # Send task using the specified table name
+            result = self.celery_app.send_task(
+                'process_dataframe',
+                args=[data_records],
+                kwargs={
+                    'table_name': table_name,
+                    'source_name': source_name
+                }
+            )
+            
+            logger.info(f"Task sent successfully: {result.id}")
+            
+            # Mark as processed
+            self.processed_files.add(filepath)
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to process file {filename}: {e}")
+            return False
+    
+    def find_and_process_files(self):
+        """Find new files and process them based on patterns"""
+        if not self.initial_scan_done:
+            return  # Skip if initial scan not complete
+            
+        watch_path = self.get_watch_path()
+        processed_count = 0
+        skipped_count = 0
+        
+        try:
+            # Find all supported files recursively
+            patterns = [os.path.join(watch_path, "**", f"*{ext}") for ext in SUPPORTED_EXTENSIONS]
+            
+            for pattern in patterns:
+                for filepath in glob.glob(pattern, recursive=True):
+                    if not os.path.isfile(filepath) or not self.is_supported_file(filepath):
+                        continue
+                    
+                    # Check if file is new or modified
+                    stat_info = os.stat(filepath)
+                    current_mtime = stat_info.st_mtime
+                    
+                    # Skip if file existed before watcher started and hasn't been modified
+                    if filepath in self.file_timestamps and self.file_timestamps[filepath] == current_mtime:
+                        continue
+                    
+                    # Check pattern matching
+                    table_name = self.get_table_name_from_path(filepath)
+                    
+                    if table_name is None:
+                        # No pattern matched - skip this file
+                        # Only update timestamp if it's truly new
+                        if filepath not in self.file_timestamps:
+                            self.file_timestamps[filepath] = current_mtime
+                        skipped_count += 1
+                        continue
+                    
+                    # New or modified file with matching pattern
+                    if filepath not in self.file_timestamps:
+                        logger.info(f"NEW file detected: {os.path.basename(filepath)} (pattern matched)")
+                    else:
+                        logger.info(f"MODIFIED file detected: {os.path.basename(filepath)} (pattern matched)")
+                    
+                    # Update timestamp
+                    self.file_timestamps[filepath] = current_mtime
+                    
+                    # Verify file is stable (not being written to)
+                    time.sleep(2)
+                    new_stat = os.stat(filepath)
+                    if new_stat.st_mtime != current_mtime:
+                        logger.info(f"File still being written, skipping: {os.path.basename(filepath)}")
+                        continue
+                    
+                    if new_stat.st_size == 0:
+                        logger.info(f"File is empty, skipping: {os.path.basename(filepath)}")
+                        continue
+                    
+                    # Add processing delay
+                    if PROCESS_DELAY > 0:
+                        time.sleep(PROCESS_DELAY)
+                    
+                    # Process the file
+                    success = self.process_file(filepath, table_name)
+                    if success:
+                        processed_count += 1
+                        logger.info(f"Successfully processed: {os.path.basename(filepath)} -> {table_name}")
+                    else:
+                        logger.error(f"Failed to process: {os.path.basename(filepath)}")
+                        
+        except Exception as e:
+            logger.error(f"Error during file scanning: {e}")
+        
+        # Summary log (only when files are found)
+        if processed_count > 0:
+            logger.info(f"Scan complete: {processed_count} processed")
+        elif skipped_count > 0:
+            logger.debug(f"Scan complete: {skipped_count} skipped (no pattern match)")
+    
+    def start_watching(self):
+        """Start the pattern-based file watcher"""
+        logger.info("="*60)
+        logger.info("PATTERN-BASED FILE WATCHER STARTED")
+        logger.info("="*60)
+        logger.info(f"Watch path: {self.get_watch_path()}")
+        logger.info(f"Supported files: {', '.join(SUPPORTED_EXTENSIONS)}")
+        logger.info(f"Checking every {POLL_INTERVAL} seconds")
+        logger.info("Pattern -> Table mappings:")
+        for pattern, table in PATTERN_TABLE_MAPPING.items():
+            logger.info(f"  '{pattern}' -> {table}")
+        logger.info("="*60)
+        
+        try:
+            while True:
+                self.find_and_process_files()
+                time.sleep(POLL_INTERVAL)
+                
+        except KeyboardInterrupt:
+            logger.info("File watcher stopped by user")
+
+def create_test_structure():
+    """Create test directory structure with pattern mappings"""
+    base_dir = Path('./watch_test')
+    
+    # Create directories
+    tel_list_dir = base_dir / 'tel_list'
+    customer_dir = base_dir / 'customer_data'
+    other_dir = base_dir / 'other_files'
+    
+    for dir_path in [tel_list_dir, customer_dir, other_dir]:
+        dir_path.mkdir(parents=True, exist_ok=True)
+    
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    
+    # Create test file in tel_list directory (should go to dim_numbers table)
+    tel_data = {
+        'phone_number': ['+1234567890', '+1987654321', '+1555000111'],
+        'country_code': ['US', 'US', 'US'],
+        'area_code': ['123', '198', '155'],
+        'number_type': ['mobile', 'landline', 'mobile']
+    }
+    tel_df = pd.DataFrame(tel_data)
+    tel_file = tel_list_dir / f'phone_numbers_{timestamp}.csv'
+    tel_df.to_csv(tel_file, index=False)
+    
+    # Create test file in customer_data directory (should go to dim_customers table)
+    customer_data = {
+        'customer_id': [1001, 1002, 1003],
+        'customer_name': ['Alice Corp', 'Bob Ltd', 'Carol Industries'],
+        'email': ['alice@corp.com', 'bob@ltd.com', 'carol@industries.com']
+    }
+    customer_df = pd.DataFrame(customer_data)
+    customer_file = customer_dir / f'customers_{timestamp}.csv'
+    customer_df.to_csv(customer_file, index=False)
+    
+    # Create test file in other directory (should be skipped)
+    other_data = {
+        'random_id': [1, 2, 3],
+        'random_value': ['A', 'B', 'C']
+    }
+    other_df = pd.DataFrame(other_data)
+    other_file = other_dir / f'random_data_{timestamp}.csv'
+    other_df.to_csv(other_file, index=False)
+    
+    logger.info(f"Created test structure:")
+    logger.info(f"  {tel_file} -> should go to dim_numbers")
+    logger.info(f"  {customer_file} -> should go to dim_customers") 
+    logger.info(f"  {other_file} -> should be skipped (no pattern match)")
+    
+    return [str(tel_file), str(customer_file), str(other_file)]
+
+def main():
+    """Main function"""
+    
+    if len(sys.argv) > 1:
+        if sys.argv[1] == 'test':
+            logger.info("Running test mode...")
+            
+            # Create test structure
+            test_files = create_test_structure()
+            
+            # Create watcher and test pattern matching
+            watcher = PatternBasedWatcher()
+            
+            logger.info("Testing pattern matching:")
+            for test_file in test_files:
+                table_name = watcher.get_table_name_from_path(test_file)
+                if table_name:
+                    logger.info(f"  {os.path.basename(test_file)} -> {table_name}")
+                else:
+                    logger.info(f"  {os.path.basename(test_file)} -> SKIPPED (no pattern)")
+            
+            logger.info("\nRunning one scan cycle...")
+            watcher.find_and_process_files()
+            
+            return
+        
+        elif sys.argv[1] == 'create':
+            create_test_structure()
+            return
+    
+    # Start normal pattern-based watching
+    watcher = PatternBasedWatcher()
+    watcher.start_watching()
+
+if __name__ == "__main__":
+    main()

@@ -12,7 +12,8 @@ app = Celery(
     include=[
         'etl_processor.enhanced_tasks',
         'etl_processor.tasks_postgres', 
-        'etl_processor.simple_tasks'
+        'etl_processor.simple_tasks',
+        'etl_processor.dataframe_tasks',  # process only dataframes, the key benefits are data-source flexible, one-task & one purpose        
     ] # Use simple tasks for testing
 )
 

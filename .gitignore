@@ -49,3 +49,4 @@ postgres/data/pgdata/*
 *.xlsx
 *.xls
 *.csv
+*csv_test

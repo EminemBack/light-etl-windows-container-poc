@@ -25,8 +25,8 @@ def get_db_engine():
     try:
         engine = create_engine(
             connection_string,
-            pool_pre_ping=True,
-            pool_recycle=3600,
+            # pool_pre_ping=True,
+            # pool_recycle=3600,
             echo=False,  # Set to True for SQL debugging
         )
         
