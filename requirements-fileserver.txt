@@ -18,4 +18,6 @@ pywin32 #==306; sys_platform == "win32"
 # Optional: For better HTTP requests
 requests==2.31.0
 
-# pip install flask pandas openpyxl waitress python-dotenv redis pywin32 requests
+PyYAML
+
+# pip install flask pandas openpyxl waitress python-dotenv redis pywin32 requests PyYAML

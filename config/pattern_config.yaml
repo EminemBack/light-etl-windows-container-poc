@@ -1,0 +1,56 @@
+watcher_settings:
+  watch_path: Z:\
+  backup_watch_path: ./watch_production
+  poll_interval: 10
+  process_delay: 5
+  supported_extensions:
+  - .csv
+  - .xlsx
+  - .xls
+  - .xlsm
+celery_settings:
+  broker_url: redis://localhost:6379/0
+  result_backend: redis://localhost:6379/1
+  task_ignore_result: true
+pattern_mappings:
+  tel_list:
+    table: dim_numbers
+    schema: public
+    description: Telephone numbers and contact information
+  customer_data:
+    table: dim_customers
+    schema: public
+    description: Customer master data
+  product_info:
+    table: dim_products
+    schema: public
+    description: Product information and catalog
+  sales_data:
+    table: fact_sales
+    schema: public
+    description: Sales transaction data
+  inventory:
+    table: dim_inventory
+    schema: public
+    description: Inventory levels and stock data
+  transactions:
+    table: fact_transactions
+    schema: public
+    description: Financial transaction records
+  reports:
+    table: staging_reports
+    schema: staging
+    description: Temporary report staging area
+data_quality:
+  max_file_size_mb: 100
+  require_headers: true
+  skip_empty_files: true
+  encoding_fallbacks:
+  - utf-8
+  - utf-8-sig
+  - latin1
+  - cp1252
+logging:
+  level: INFO
+  file: ./logs/pattern_watcher.log
+  format: '%(asctime)s - %(levelname)s - %(message)s'
