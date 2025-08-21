@@ -48,7 +48,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('./pattern_watcher.log'),
+        logging.FileHandler('./logs/pattern_watcher.log'),
         logging.StreamHandler(sys.stdout)
     ]
 )
